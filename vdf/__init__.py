@@ -86,96 +86,96 @@ def parse(fp, mapper=dict, merge_duplicate_keys=True, escaped=True):
     stack = [mapper()]
     expect_bracket = False
 
-    re_keyvalue = re.compile(r'^("(?P<qkey>(?:\\.|[^\\"])*)"|(?P<key>#?[a-z0-9\-\_\\\?$%<>]+))'
+    re_keyvalue = re.compile(r'^("(?P<qkey>(?:\\.|[^\\"])+)"|(?P<key>#?[a-z0-9\-\_\\\?]+))'
                              r'([ \t]*('
                              r'"(?P<qval>(?:\\.|[^\\"])*)(?P<vq_end>")?'
-                             r'|(?P<val>(?:(?<!/)/(?!/)|[a-z0-9\-\_\\\?\*\.$<> ])+)'
-                             r'|(?P<sblock>{[ \t]*)(?P<eblock>})?'
+                             r'|(?P<val>[a-z0-9\-\_\\\?\*\.]+)'
                              r'))?',
                              flags=re.I)
 
+    remains = ""
     for lineno, line in enumerate(fp, 1):
-        if lineno == 1:
-            line = strip_bom(line)
+        remains = line
+        while remains:
+            line = remains + ""
 
-        line = line.lstrip()
+            remains = ""
+            if lineno == 1:
+                line = strip_bom(line)
 
-        # skip empty and comment lines
-        if line == "" or line[0] == '/':
-            continue
+            line = line.lstrip()
 
-        # one level deeper
-        if line[0] == "{":
-            expect_bracket = False
-            continue
-
-        if expect_bracket:
-            raise SyntaxError("vdf.parse: expected openning bracket",
-                              (getattr(fp, 'name', '<%s>' % fp.__class__.__name__), lineno, 1, line))
-
-        # one level back
-        if line[0] == "}":
-            if len(stack) > 1:
-                stack.pop()
+            # skip empty and comment lines
+            if line == "" or line[0] == '/':
                 continue
 
-            raise SyntaxError("vdf.parse: one too many closing parenthasis",
-                              (getattr(fp, 'name', '<%s>' % fp.__class__.__name__), lineno, 0, line))
+            # one level deeper
+            if line[0] == "{":
+                expect_bracket = False
+                remains = line[1:]
+                continue
 
-        # parse keyvalue pairs
-        while True:
-            match = re_keyvalue.match(line)
+            if expect_bracket:
+                raise SyntaxError("vdf.parse: expected openning bracket",
+                                  (getattr(fp, 'name', '<%s>' % fp.__class__.__name__), lineno, 1, line))
 
-            if not match:
-                try:
-                    line += next(fp)
+            # one level back
+            if line[0] == "}":
+                remains = line[1:]
+                if len(stack) > 1:
+                    stack.pop()
                     continue
-                except StopIteration:
-                    raise SyntaxError("vdf.parse: unexpected EOF (open key quote?)",
-                                      (getattr(fp, 'name', '<%s>' % fp.__class__.__name__), lineno, 0, line))
 
-            key = match.group('key') if match.group('qkey') is None else match.group('qkey')
-            val = match.group('qval')
-            if val is None:
-                val = match.group('val')
-                if val is not None:
-                    val = val.rstrip()
-                    if val == "":
-                        val = None
+                raise SyntaxError("vdf.parse: one too many closing parenthasis",
+                                  (getattr(fp, 'name', '<%s>' % fp.__class__.__name__), lineno, 0, line))
 
-            if escaped:
-                key = _unescape(key)
+            # parse keyvalue pairs
+            while True:
+                match = re_keyvalue.match(line)
 
-            # we have a key with value in parenthesis, so we make a new dict obj (level deeper)
-            if val is None:
-                if merge_duplicate_keys and key in stack[-1]:
-                    _m = stack[-1][key]
-                else:
-                    _m = mapper()
-                    stack[-1][key] = _m
-
-                if match.group('eblock') is None:
-                    # only expect a bracket if it's not already closed or on the same line
-                    stack.append(_m)
-                    if match.group('sblock') is None:
-                        expect_bracket = True
-
-            # we've matched a simple keyvalue pair, map it to the last dict obj in the stack
-            else:
-                # if the value is line consume one more line and try to match again,
-                # until we get the KeyValue pair
-                if match.group('vq_end') is None and match.group('qval') is not None:
+                if not match:
                     try:
                         line += next(fp)
                         continue
                     except StopIteration:
-                        raise SyntaxError("vdf.parse: unexpected EOF (open quote for value?)",
+                        raise SyntaxError("vdf.parse: unexpected EOF (open key quote?)",
                                           (getattr(fp, 'name', '<%s>' % fp.__class__.__name__), lineno, 0, line))
+                else:
+                    remains = line[match.end():]
 
-                stack[-1][key] = _unescape(val) if escaped else val
+                key = match.group('key') if match.group('qkey') is None else match.group('qkey')
+                val = match.group('val') if match.group('qval') is None else match.group('qval')
 
-            # exit the loop
-            break
+                if escaped:
+                    key = _unescape(key)
+
+                # we have a key with value in parenthesis, so we make a new dict obj (level deeper)
+                if val is None:
+                    if merge_duplicate_keys and key in stack[-1]:
+                        _m = stack[-1][key]
+                    else:
+                        _m = mapper()
+                        stack[-1][key] = _m
+
+                    stack.append(_m)
+                    expect_bracket = True
+
+                # we've matched a simple keyvalue pair, map it to the last dict obj in the stack
+                else:
+                    # if the value is line consume one more line and try to match again,
+                    # until we get the KeyValue pair
+                    if match.group('vq_end') is None and match.group('qval') is not None:
+                        try:
+                            line += next(fp)
+                            continue
+                        except StopIteration:
+                            raise SyntaxError("vdf.parse: unexpected EOF (open quote for value?)",
+                                              (getattr(fp, 'name', '<%s>' % fp.__class__.__name__), lineno, 0, line))
+
+                    stack[-1][key] = _unescape(val) if escaped else val
+
+                # exit the loop
+                break
 
     if len(stack) != 1:
         raise SyntaxError("vdf.parse: unclosed parenthasis or quotes (EOF)",
